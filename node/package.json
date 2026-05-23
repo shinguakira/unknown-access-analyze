@@ -1,0 +1,20 @@
+{
+  "name": "unknown-access-analyze",
+  "version": "1.0.0",
+  "description": "Request logger for Azure Functions (Node v4 model)",
+  "main": "dist/src/functions/*.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "prestart": "npm run build",
+    "start": "func start",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  }
+}
