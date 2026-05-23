@@ -2,6 +2,41 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/fu
 
 const MAX_BODY_BYTES = 64 * 1024;
 
+// Endpoints commonly probed by credential / config / vuln scanners.
+// A hit on any of these almost always means "someone is fishing for secrets",
+// not legitimate traffic — gets escalated to a warn-level log.
+const SUSPICIOUS_PATH_PATTERNS: RegExp[] = [
+    /\.env(\.|$)/i,                      // /.env, /.env.local, /.env.prod
+    /\.git(\/|$)/i,                      // /.git/config, /.git/HEAD
+    /\.aws\/credentials/i,
+    /\.ssh\/(id_rsa|authorized_keys)/i,
+    /\.htpasswd|\.htaccess/i,
+    /\.DS_Store$/i,
+    /\b(wp-admin|wp-login|wp-config|xmlrpc\.php)\b/i, // WordPress
+    /\bphpmyadmin\b/i,
+    /\b(actuator|jmx-console|invoker)\b/i, // Spring Boot / JBoss
+    /\b(\.well-known\/security\.txt)\b/i,
+    /\b(server-status|server-info)\b/i,    // Apache mod_status
+    /\b(config\.json|config\.yaml|config\.yml|secrets\.json)\b/i,
+    /\b(\.\.[\/\\])/,                      // path traversal
+    /%2e%2e/i,                             // encoded path traversal
+    /\b(eval-stdin\.php|cgi-bin)\b/i,
+    /\b(boaform|GponForm|HNAP1)\b/i,       // router/IoT exploits
+];
+
+function classifyPath(path: string): "suspicious" | "normal" {
+    return SUSPICIOUS_PATH_PATTERNS.some((re) => re.test(path)) ? "suspicious" : "normal";
+}
+
+function clientIpFromHeaders(headers: Record<string, string[]>): string {
+    // Azure populates several IP headers; prefer x-forwarded-for, then client-ip.
+    const xff = headers["x-forwarded-for"]?.[0];
+    if (xff) return xff.split(",")[0].trim().replace(/:\d+$/, "");
+    const ci = headers["client-ip"]?.[0];
+    if (ci) return ci.replace(/:\d+$/, "");
+    return "unknown";
+}
+
 interface Entry {
     time: string;
     method: string;
@@ -50,7 +85,21 @@ export async function catchall(
         }
     }
 
+    // 1. Full structured log (machine-readable, for later analysis)
     context.log(JSON.stringify(entry));
+
+    // 2. Human-readable access summary — the line you scan with your eyes.
+    //    Suspicious paths get warn level so they stand out in Log Stream / KQL filters.
+    const ip = clientIpFromHeaders(headers);
+    const ua = headers["user-agent"]?.[0] ?? "-";
+    const pathDisplay = entry.raw_query ? `${entry.path}?${entry.raw_query}` : entry.path;
+    const summary = `[ACCESS] ${entry.method} ${pathDisplay} ip=${ip} ua="${ua}"`;
+
+    if (classifyPath(entry.path) === "suspicious") {
+        context.warn(`[SUSPICIOUS] ${summary}`);
+    } else {
+        context.log(summary);
+    }
 
     return {
         status: 404,
